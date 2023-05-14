@@ -70,6 +70,8 @@ int main() {
             switch(state) 
             {
                 case IDLE:
+                    record_data.clear();
+                    attempt_data.clear();
                     BSP_LCD_Clear(LCD_COLOR_WHITE);
                     printf("IDLE -> RECORDING\n");
                     state = RECORDING;
