@@ -2,6 +2,18 @@
 #include <math.h>
 #include <vector>
 #include <cmath>
+#include "stm32f4xx_hal.h"
+#include "stm32f429i_discovery_lcd.h"
+
+// This is so dumb, for some reason the LCD was throwing 
+// an error w/ out it, so just had to define my own func
+extern "C" void wait_ms(int ms) {
+    for (int i = 0; i < ms; i++) {
+        for (int j = 0; j < 1000; j++) {
+            __asm("nop");
+        }
+    }
+}
 
 
 struct GyroData
@@ -25,6 +37,7 @@ InterruptIn enter_key(USER_BUTTON);
 void setFlag();
 void setMode();
 void setupGyro();
+void initDisplay();
 bool compareSequences(const std::vector<GyroData>& seq1, const std::vector<GyroData>& seq2, double threshold);
 double computeCrossCorrelation(const std::vector<double>& x, const std::vector<double>& y);
 GyroData readGyro();
@@ -40,6 +53,7 @@ void updateState() {
 
 int main() {
     setupGyro();
+    initDisplay();
 
     // Now we'll initialize two arrays which contain the recorded unlock sequence 
     // and attempted one.
@@ -56,15 +70,22 @@ int main() {
             switch(state) 
             {
                 case IDLE:
+                    BSP_LCD_Clear(LCD_COLOR_WHITE);
                     printf("IDLE -> RECORDING\n");
                     state = RECORDING;
                     break;
                 case RECORDING: 
                     printf("RECORDING -> WAITING\n");
+                    BSP_LCD_Clear(LCD_COLOR_WHITE);
+                    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);  
+                    BSP_LCD_DisplayStringAt(0, LINE(5), (uint8_t *)"Recording...", CENTER_MODE);
                     state = WAITING;
                     break;
                 case WAITING:
                     printf("WAITING -> UNLOCKING\n");
+                    BSP_LCD_Clear(LCD_COLOR_WHITE);
+                    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);  
+                    BSP_LCD_DisplayStringAt(0, LINE(5), (uint8_t *)"Unlock?", CENTER_MODE);
                     state = UNLOCKING;
                     data_index = 0;
                     break;
@@ -76,6 +97,9 @@ int main() {
                     printf("Checking sequences\n");
                     correct = compareSequences(record_data, attempt_data, 100);
                     if (!correct) {
+                        BSP_LCD_Clear(LCD_COLOR_WHITE);
+                        BSP_LCD_SetTextColor(LCD_COLOR_RED);  
+                        BSP_LCD_DisplayStringAt(0, LINE(5), (uint8_t *)"Incorrect!", CENTER_MODE);                        
                         if (remaining_attempts == 0) {
                             state = LOCKED;
                             break;
@@ -87,11 +111,16 @@ int main() {
                         }
                     } else {
                         printf("Correct! Checking -> IDLE\n");
+                        BSP_LCD_Clear(LCD_COLOR_WHITE);
+                        BSP_LCD_SetTextColor(LCD_COLOR_GREEN);  
+                        BSP_LCD_DisplayStringAt(0, LINE(5), (uint8_t *)"Unlocked :)", CENTER_MODE);   
                         state = IDLE;     
                         break;  
                     }
                 case LOCKED: 
-                    printf("You're locked out!\n");
+                    BSP_LCD_Clear(LCD_COLOR_WHITE);
+                    BSP_LCD_SetTextColor(LCD_COLOR_RED);  
+                    BSP_LCD_DisplayStringAt(0, LINE(5), (uint8_t *)"LOCKED.", CENTER_MODE);   
                     state = LOCKED;
                     break;
                 default:
@@ -203,4 +232,14 @@ double computeCrossCorrelation(const std::vector<double>& x, const std::vector<d
         }
     }
     return max_corr;
+}
+
+void initDisplay() {
+    HAL_Init();
+    BSP_LCD_Init();
+
+    BSP_LCD_LayerDefaultInit(0, LCD_FRAME_BUFFER);
+    BSP_LCD_SelectLayer(0);
+    BSP_LCD_DisplayOn();
+    BSP_LCD_Clear(LCD_COLOR_WHITE);
 }
