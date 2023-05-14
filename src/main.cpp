@@ -1,122 +1,206 @@
-#include "mbed.h"
+#include <mbed.h>
+#include <math.h>
+#include <vector>
+#include <cmath>
 
-// Define LED output pin
-DigitalOut led(LED3);
 
-// Define button input pins
-DigitalIn enterKeyButton(PB_14);
-DigitalIn recordButton(PA_0);
+struct GyroData
+{
+  int16_t x;
+  int16_t y;
+  int16_t z;
+};
 
-// Define accelerometer object
-AnalogIn x_axis(PF_10);
-AnalogIn y_axis(PF_9);
-AnalogIn z_axis(PF_8);
+const int threshold = 100;
+const int max_sequence_length = 300;
 
-// Define data buffer for recording and replaying movements
-#define MAX_MOVEMENT_SIZE 100
-int16_t movementBuffer[MAX_MOVEMENT_SIZE][3];
-int movementSize = 0;
+volatile bool flag = false;
 
-// Define tolerances for movement detection and replaying
-#define TOLERANCE 0.1
-#define TOLERANCE_RECORD 0.2
+SPI spi(PF_9, PF_8, PF_7);
+DigitalOut cs(PC_1);
+
+// "Enter key" and "Record" button
+InterruptIn enter_key(USER_BUTTON);
+
+void setFlag();
+void setMode();
+void setupGyro();
+bool compareSequences(const std::vector<GyroData>& seq1, const std::vector<GyroData>& seq2, double threshold);
+double computeCrossCorrelation(const std::vector<double>& x, const std::vector<double>& y);
+GyroData readGyro();
+
 
 // Define state variables
-enum State {IDLE, RECORDING, REPLAYING};
+enum State {IDLE, RECORDING, WAITING, UNLOCKING, CHECKING, LOCKED};
 State state = IDLE;
 
-// Function to read accelerometer data and update LED status
-void updateAccelerometer()
-{
-    int16_t x = x_axis.read()*100;
-    int16_t y = y_axis.read()*100;
-    int16_t z = z_axis.read()*100;
+void updateState() {
+    flag = true;
+}
 
-    switch(state)
-    {
-        case IDLE:
-            if (recordButton.read() == 1)
-            {
-                // Start recording
-                state = RECORDING;
-                movementSize = 0;
-            }
-            break;
+int main() {
+    setupGyro();
 
-        case RECORDING:
-            if (recordButton.read() == 0)
-            {
-                // Stop recording
-                state = IDLE;
-            }
-            else if (movementSize < MAX_MOVEMENT_SIZE)
-            {
-                // Record movement
-                movementBuffer[movementSize][0] = x;
-                movementBuffer[movementSize][1] = y;
-                movementBuffer[movementSize][2] = z;
-                movementSize++;
-            }
-            break;
+    // Now we'll initialize two arrays which contain the recorded unlock sequence 
+    // and attempted one.
+    std::vector<GyroData> record_data(max_sequence_length);
+    std::vector<GyroData> attempt_data(max_sequence_length);
+    int data_index = 0;
+  
+    int remaining_attempts = 5;
+    bool correct = false;
 
-        case REPLAYING:
-            if (enterKeyButton.read() == 0)
+    enter_key.fall(&updateState);
+    while (1) {
+        if (flag) {
+            switch(state) 
             {
-                // Stop replaying
-                state = IDLE;
-            }
-            else if (movementSize > 0)
-            {
-                // Check if current movement matches recorded movement
-                bool success = true;
-                for (int i = 0; i < movementSize; i++)
-                {
-                    int16_t xDiff = abs(x - movementBuffer[i][0]);
-                    int16_t yDiff = abs(y - movementBuffer[i][1]);
-                    int16_t zDiff = abs(z - movementBuffer[i][2]);
-                    if (xDiff > TOLERANCE || yDiff > TOLERANCE || zDiff > TOLERANCE)
-                    {
-                        success = false;
-                        break;
+                case IDLE:
+                    printf("IDLE -> RECORDING\n");
+                    state = RECORDING;
+                    break;
+                case RECORDING: 
+                    printf("RECORDING -> WAITING\n");
+                    state = WAITING;
+                    break;
+                case WAITING:
+                    printf("WAITING -> UNLOCKING\n");
+                    state = UNLOCKING;
+                    data_index = 0;
+                    break;
+                case UNLOCKING: 
+                    printf("UNLOCKING -> CHECKING\n");
+                    state = CHECKING;
+                    break;         
+                case CHECKING:
+                    printf("Checking sequences\n");
+                    correct = compareSequences(record_data, attempt_data, 100);
+                    if (!correct) {
+                        if (remaining_attempts == 0) {
+                            state = LOCKED;
+                            break;
+                        } else {
+                            state = UNLOCKING;
+                            remaining_attempts--;
+                            printf("Incorrect. %d attempts remaining...\n", remaining_attempts);
+                            break;
+                        }
+                    } else {
+                        printf("Correct! Checking -> IDLE\n");
+                        state = IDLE;     
+                        break;  
                     }
-                }
-
-                if (success)
-                {
-                    // Indicate successful unlock
-                    led = 1;
-                    wait_us(500000);
-                    led = 0;
-                }
+                case LOCKED: 
+                    printf("You're locked out!\n");
+                    state = LOCKED;
+                    break;
+                default:
+                    state = IDLE;
+                    break;
             }
-            break;
-
-        default:
-            state = IDLE;
-            break;
+            flag = false;
+        } else if (state == RECORDING) {
+            if (data_index < max_sequence_length) {
+                record_data[data_index] = readGyro();
+                //printf("record_data[data_index]\n");
+                data_index++;
+            }
+        } else if (state == UNLOCKING) {
+            if (data_index < max_sequence_length) {
+                attempt_data[data_index] = readGyro();
+                //printf("Unlocking\n");
+                data_index++;
+            }
+        }
     }
 }
 
-int main()
+void setMode() {          
+  cs=0;
+  spi.write(0x20);
+  spi.write(0xCF);
+  cs=1;
+}
+
+GyroData readGyro()
 {
-    // Loop forever
-    while (true)
-    {
-        updateAccelerometer();
+  cs = 0;
+  spi.write(0xE8);
+  int OUT_X_L = spi.write(0x00);
+  int OUT_X_H = spi.write(0x00);
+  int OUT_Y_L = spi.write(0x00);
+  int OUT_Y_H = spi.write(0x00);
+  int OUT_Z_L = spi.write(0x00);
+  int OUT_Z_H = spi.write(0x00);
+  cs = 1;
 
-        // Check if enter key is pressed to start replaying movement
-        if (enterKeyButton.read() == 1 && state == IDLE && movementSize > 0)
-        {
-            state = REPLAYING;
-            printf("Replaying Movement %d:\n", movementSize);
-            printf("State %d:\n", state);
+  GyroData raw_data;
+  raw_data.x = (OUT_X_H << 8) | (OUT_X_L);
+  raw_data.y = (OUT_Y_H << 8) | (OUT_Y_L);
+  raw_data.z = (OUT_Z_H << 8) | (OUT_Z_L);
+
+  return raw_data;
+}
+
+void setupGyro() {
+    cs = 1;
+    setMode();
+    spi.format(8, 3);
+    spi.frequency(100000);
+}
+
+bool compareSequences(const std::vector<GyroData>& seq1, const std::vector<GyroData>& seq2, double threshold) {
+    int n1 = seq1.size();
+    int n2 = seq2.size();
+    int n = std::max(n1, n2);
+
+    std::vector<double> x1(n), y1(n), z1(n);
+    std::vector<double> x2(n), y2(n), z2(n);
+
+    for (int i = 0; i < n; i++) {
+        if (i < n1) {
+            x1[i] = seq1[i].x;
+            y1[i] = seq1[i].y;
+            z1[i] = seq1[i].z;
+        } else {
+            x1[i] = 0;
+            y1[i] = 0;
+            z1[i] = 0;
         }
-
-        // Print out movements in buffer during recording
-        if (state == RECORDING)
-        {
-            printf("Recording Movement %d:\n", movementSize);
-            printf("X: %d, Y: %d, Z: %d\n", movementBuffer[movementSize-1][0], movementBuffer[movementSize-1][1], movementBuffer[movementSize-1][2]);
+        if (i < n2) {
+            x2[i] = seq2[i].x;
+            y2[i] = seq2[i].y;
+            z2[i] = seq2[i].z;
+        } else {
+            x2[i] = 0;
+            y2[i] = 0;
+            z2[i] = 0;
         }
     }
+
+    double corrX = computeCrossCorrelation(x1, x2);
+    double corrY = computeCrossCorrelation(y1, y2);
+    double corrZ = computeCrossCorrelation(z1, z2);
+    printf("%d, %d, %d\n", (int)corrX, (int)corrY, (int)corrZ);
+
+    return corrX > threshold && corrY > threshold && corrZ > threshold;
+}
+
+double computeCrossCorrelation(const std::vector<double>& x, const std::vector<double>& y) {
+    int n = x.size();
+    double max_corr = 0;
+    for (int shift = -n + 1; shift < n; shift++) {
+        double corr = 0;
+        for (int i = 0; i < n; i++) {
+            int j = i + shift;
+            if (j >= 0 && j < n) {
+                corr += x[i] * y[j];
+            }
+        }
+        corr /= n;
+        if (corr > max_corr) {
+            max_corr = corr;
+        }
+    }
+    return max_corr;
 }
