@@ -7,7 +7,9 @@
 #include "stm32f4xx_hal.h"
 #include "stm32f429i_discovery_lcd.h"
 
-// 20% creativity: We 
+// 10% creativity: We've added two extra features here: 
+//   - Display incorrect/correct messages to the LCD
+//   - A set number of unlocks before you're permanently locked out.
 
 
 // For some reason, the LCD screen was throwing an error about wait_ms not being
